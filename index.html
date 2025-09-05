@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>State Flag Clusters</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+    #plot { width: 100vw; height: 60vh; }
+    .cluster-list { display: flex; flex-wrap: wrap; gap: 2em; margin: 2em; }
+    .cluster { border: 1px solid #ccc; border-radius: 8px; padding: 1em; min-width: 200px; }
+    .state-item { display: flex; align-items: center; margin-bottom: 0.5em; }
+    .state-item img { width: 32px; height: 20px; object-fit: cover; margin-right: 0.5em; border: 1px solid #aaa; border-radius: 3px; }
+    h2 { margin-top: 0; }
+  </style>
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+  <h1>State Flag Color Clusters</h1>
+  <div id="plot"></div>
+  <div class="cluster-list" id="cluster-list"></div>
+  <script>
+    // Helper: load JSON data
+    async function loadFlagsData() {
+      const res = await fetch('flags/flags_rgb.json');
+      return await res.json();
+    }
+
+    // K-means clustering (k=4)
+    function kmeans(data, k=4, maxIter=100) {
+      // data: [{avg_rgb: [r,g,b], ...}]
+      // Returns: {labels: [...], centroids: [[r,g,b], ...]}
+      const points = data.map(d => d.avg_rgb);
+      // Randomly initialize centroids
+      let centroids = points.slice(0, k);
+      for (let i = 0; i < k; i++) {
+        centroids[i] = points[Math.floor(Math.random() * points.length)];
+      }
+      let labels = Array(points.length).fill(0);
+      for (let iter = 0; iter < maxIter; iter++) {
+        // Assign labels
+        labels = points.map(p => {
+          let minDist = Infinity, minIdx = 0;
+          centroids.forEach((c, idx) => {
+            const dist = Math.sqrt((p[0]-c[0])**2 + (p[1]-c[1])**2 + (p[2]-c[2])**2);
+            if (dist < minDist) { minDist = dist; minIdx = idx; }
+          });
+          return minIdx;
+        });
+        // Update centroids
+        let newCentroids = Array(k).fill().map(() => [0,0,0]);
+        let counts = Array(k).fill(0);
+        points.forEach((p, i) => {
+          const label = labels[i];
+          newCentroids[label][0] += p[0];
+          newCentroids[label][1] += p[1];
+          newCentroids[label][2] += p[2];
+          counts[label]++;
+        });
+        for (let i = 0; i < k; i++) {
+          if (counts[i] > 0) {
+            newCentroids[i][0] /= counts[i];
+            newCentroids[i][1] /= counts[i];
+            newCentroids[i][2] /= counts[i];
+          } else {
+            newCentroids[i] = points[Math.floor(Math.random() * points.length)];
+          }
+        }
+        // Check for convergence
+        if (JSON.stringify(centroids) === JSON.stringify(newCentroids)) break;
+        centroids = newCentroids;
+      }
+      return {labels, centroids};
+    }
+
+    // Plot 3D points and centroids
+    function plotClusters(data, labels, centroids) {
+      const traces = [];
+      for (let i = 0; i < centroids.length; i++) {
+        const clusterPoints = data.filter((_, idx) => labels[idx] === i);
+        // Points: scale to 0-255 and color by average flag color
+        traces.push({
+          x: clusterPoints.map(d => d.avg_rgb[0] * 255),
+          y: clusterPoints.map(d => d.avg_rgb[1] * 255),
+          z: clusterPoints.map(d => d.avg_rgb[2] * 255),
+          text: clusterPoints.map(d => d.state),
+          mode: 'markers',
+          type: 'scatter3d',
+          name: `Cluster ${i+1}`,
+          marker: {
+            size: 8,
+            color: clusterPoints.map(d => `rgb(${Math.round(d.avg_rgb[0]*255)},${Math.round(d.avg_rgb[1]*255)},${Math.round(d.avg_rgb[2]*255)})`)
+          }
+        });
+        // Centroid: scale to 0-255 and color by centroid value
+        const centroidColor = `rgb(${Math.round(centroids[i][0]*255)},${Math.round(centroids[i][1]*255)},${Math.round(centroids[i][2]*255)})`;
+        traces.push({
+          x: [centroids[i][0] * 255],
+          y: [centroids[i][1] * 255],
+          z: [centroids[i][2] * 255],
+          mode: 'markers',
+          type: 'scatter3d',
+          name: `Centroid ${i+1}`,
+          marker: { size: 16, color: centroidColor, symbol: 'diamond' }
+        });
+        // Lines from points to centroid
+        clusterPoints.forEach(d => {
+          traces.push({
+            x: [d.avg_rgb[0] * 255, centroids[i][0] * 255],
+            y: [d.avg_rgb[1] * 255, centroids[i][1] * 255],
+            z: [d.avg_rgb[2] * 255, centroids[i][2] * 255],
+            mode: 'lines',
+            type: 'scatter3d',
+            line: { color: centroidColor, width: 1 },
+            showlegend: false
+          });
+        });
+      }
+      Plotly.newPlot('plot', traces, {
+        margin: {l:0, r:0, b:0, t:0},
+        scene: {
+          xaxis: {title: 'Red', range: [0,255]},
+          yaxis: {title: 'Green', range: [0,255]},
+          zaxis: {title: 'Blue', range: [0,255]}
+        }
+      });
+    }
+
+    // List states by cluster
+    function listClusters(data, labels, k) {
+      const clusterList = document.getElementById('cluster-list');
+      clusterList.innerHTML = '';
+      for (let i = 0; i < k; i++) {
+        const clusterPoints = data.filter((_, idx) => labels[idx] === i);
+        const div = document.createElement('div');
+        div.className = 'cluster';
+        div.innerHTML = `<h2>Cluster ${i+1}</h2>`;
+        clusterPoints.forEach(d => {
+          const item = document.createElement('div');
+          item.className = 'state-item';
+          item.innerHTML = `<img src='flags/thumbnails/${d.filename}' alt='${d.state} flag'>${d.state}`;
+          div.appendChild(item);
+        });
+        clusterList.appendChild(div);
+      }
+    }
+
+    // Main
+    loadFlagsData().then(data => {
+      const k = 4;
+      const {labels, centroids} = kmeans(data, k);
+      plotClusters(data, labels, centroids);
+      listClusters(data, labels, k);
+    });
+  </script>
+</body>
+</html>
